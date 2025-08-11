@@ -40,7 +40,8 @@ threshold = st.slider('Minimum match score threshold', min_value=0, max_value=10
 col1, col2 = st.columns([1, 3])
 
 with col1:
-    input_df = st.data_editor(pd.DataFrame({'Names': ['']}), num_rows="dynamic", use_container_width=True)
+    input_df = pd.DataFrame({'Names': ['']})
+    st.table(input_df)
 
 with col2:
     if not input_df.empty and input_df['Names'].str.strip().any():
