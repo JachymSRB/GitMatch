@@ -12,6 +12,7 @@ def load_ofac():
     return names
 
 ofac_names = load_ofac()
+
 def normalize(text):
     # Remove special characters, lowercase, and tokenize
     text = re.sub(r'[^\w\s]', '', text)
@@ -34,8 +35,9 @@ st.title('OFAC Fuzzy Matcher')
 st.write('Paste a column of names from Excel below:')
 threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70, key='threshold_slider')
 
-# Two columns for input and output
-col1, col2 = st.columns(2)
+
+# Layout: input 1 wide, output 3 wide
+col1, col2 = st.columns([1, 3])
 
 with col1:
     input_df = st.data_editor(pd.DataFrame({'Names': ['']}), num_rows="dynamic", use_container_width=True)
@@ -52,7 +54,7 @@ with col2:
             else:
                 match_str = ''
             result.append(match_str)
-        output_df = pd.DataFrame({'Names': input_df['Names'], 'Top Matches': result})
+        output_df = pd.DataFrame({'Top Matches': result})
         st.dataframe(output_df, use_container_width=True, hide_index=True)
     else:
         st.info('Enter names to see matches.')
