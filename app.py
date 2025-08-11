@@ -34,40 +34,40 @@ def get_top_matches(query, choices, n=3):
 st.set_page_config(layout="wide")
 
 # Title and sensitivity slider across the top
-st.title('OFAC Fuzzy Matcher')
+st.title('Pazdrát Fuzzy Matcher')
 st.write('Paste a column of names from Excel below:')
 threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70, key='threshold_slider')
 
 
 # Layout: input 1 wide, output 3 wide
 
-col1, col2 = st.columns(2)
 
-with col1:
+# Editable input table in expander
+with st.expander('Input Table', expanded=False):
     input_df = st.data_editor(pd.DataFrame({'Names': ['']}), num_rows="dynamic", use_container_width=True)
 
-with col2:
-    if not input_df.empty and input_df['Names'].str.strip().any():
-        ofac_result = []
-        fcdo_result = []
-        for name in input_df['Names'].dropna():
-            # OFAC matches
-            ofac_matches = get_top_matches(name, ofac_names)
-            ofac_filtered = [m for m in ofac_matches if m[1] >= threshold]
-            if ofac_filtered:
-                ofac_str = ', '.join([f"{m[0]} ({m[1]})" for m in ofac_filtered])
-            else:
-                ofac_str = ''
-            ofac_result.append(ofac_str)
-            # FCDO matches
-            fcdo_matches = get_top_matches(name, fcdo_names)
-            fcdo_filtered = [m for m in fcdo_matches if m[1] >= threshold]
-            if fcdo_filtered:
-                fcdo_str = ', '.join([f"{m[0]} ({m[1]})" for m in fcdo_filtered])
-            else:
-                fcdo_str = ''
-            fcdo_result.append(fcdo_str)
-        output_df = pd.DataFrame({'Names': input_df['Names'], 'OFAC Matches': ofac_result, 'FCDO Matches': fcdo_result})
-        st.dataframe(output_df, use_container_width=True, hide_index=True)
-    else:
-        st.info('Enter names to see matches.')
+# Results table below title and above input
+if not input_df.empty and input_df['Names'].str.strip().any():
+    ofac_result = []
+    fcdo_result = []
+    for name in input_df['Names'].dropna():
+        # OFAC matches
+        ofac_matches = get_top_matches(name, ofac_names)
+        ofac_filtered = [m for m in ofac_matches if m[1] >= threshold]
+        if ofac_filtered:
+            ofac_str = ', '.join([f"{m[0]} ({m[1]})" for m in ofac_filtered])
+        else:
+            ofac_str = ''
+        ofac_result.append(ofac_str)
+        # FCDO matches
+        fcdo_matches = get_top_matches(name, fcdo_names)
+        fcdo_filtered = [m for m in fcdo_matches if m[1] >= threshold]
+        if fcdo_filtered:
+            fcdo_str = ', '.join([f"{m[0]} ({m[1]})" for m in fcdo_filtered])
+        else:
+            fcdo_str = ''
+        fcdo_result.append(fcdo_str)
+    output_df = pd.DataFrame({'Names': input_df['Names'], 'OFAC Matches': ofac_result, 'FCDO Matches': fcdo_result})
+    st.dataframe(output_df, use_container_width=True, hide_index=True)
+else:
+    st.info('Enter names to see matches.')
