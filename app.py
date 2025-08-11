@@ -12,10 +12,6 @@ def load_ofac():
     return names
 
 ofac_names = load_ofac()
-
-# Add threshold slider to UI
-threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70)
-
 def normalize(text):
     # Remove special characters, lowercase, and tokenize
     text = re.sub(r'[^\w\s]', '', text)
