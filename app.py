@@ -44,12 +44,31 @@ def get_enhanced_lists():
     eu = enhance_names(eu_names)
     return ofac, fcdo, eu
 
+
 def get_top_matches(query, choices, n=3):
-    query_norm = normalize(query)
-    choices_norm = [normalize(c) for c in choices]
-    results = process.extract(query_norm, choices_norm, scorer=fuzz.token_sort_ratio, limit=n)
-    # Map back to original names and show rounded score
-    return [(choices[i], int(round(score))) for (_, score, i) in results]
+    # Enhance input name if it contains 'vich' or 'vna'
+    tokens = query.split()
+    filtered = [t for t in tokens if not ("vich" in t or "vna" in t)]
+    queries = [query]
+    if len(filtered) < len(tokens):
+        new_query = " ".join(filtered)
+        if new_query:
+            queries.append(new_query)
+    # Get matches for both original and enhanced query
+    all_matches = []
+    for q in queries:
+        query_norm = normalize(q)
+        choices_norm = [normalize(c) for c in choices]
+        results = process.extract(query_norm, choices_norm, scorer=fuzz.token_sort_ratio, limit=n)
+        # Map back to original names and show rounded score
+        all_matches.extend([(choices[i], int(round(score))) for (_, score, i) in results])
+    # Deduplicate by name, keep highest score, and sort
+    match_dict = {}
+    for name, score in all_matches:
+        if name not in match_dict or score > match_dict[name]:
+            match_dict[name] = score
+    sorted_matches = sorted(match_dict.items(), key=lambda x: x[1], reverse=True)
+    return sorted_matches[:n]
 
 
 
