@@ -13,6 +13,9 @@ def load_ofac():
 
 ofac_names = load_ofac()
 
+# Add threshold slider to UI
+threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70)
+
 def normalize(text):
     # Remove special characters, lowercase, and tokenize
     text = re.sub(r'[^\w\s]', '', text)
@@ -23,8 +26,8 @@ def get_top_matches(query, choices, n=3):
     query_norm = normalize(query)
     choices_norm = [normalize(c) for c in choices]
     results = process.extract(query_norm, choices_norm, scorer=fuzz.token_sort_ratio, limit=n)
-    # Map back to original names and show score
-    return [(choices[i], score) for (_, score, i) in results]
+    # Map back to original names and show rounded score
+    return [(choices[i], int(round(score))) for (_, score, i) in results]
 
 st.title('OFAC Fuzzy Matcher')
 st.write('Paste a column of names from Excel below:')
@@ -35,7 +38,12 @@ if not input_df.empty and input_df['Names'].str.strip().any():
     result = []
     for name in input_df['Names'].dropna():
         matches = get_top_matches(name, ofac_names)
-        match_str = ', '.join([f"{m[0]} ({m[1]})" for m in matches])
+        # Filter matches by threshold
+        filtered = [m for m in matches if m[1] >= threshold]
+        if filtered:
+            match_str = ', '.join([f"{m[0]} ({m[1]})" for m in filtered])
+        else:
+            match_str = ''
         result.append(match_str)
     output_df = pd.DataFrame({'Names': input_df['Names'], 'Top Matches': result})
     st.dataframe(output_df, use_container_width=True, hide_index=True)
