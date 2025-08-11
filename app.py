@@ -25,6 +25,25 @@ def normalize(text):
     tokens = text.lower().split()
     return ' '.join(tokens)
 
+
+def enhance_names(names):
+    enhanced = set(names)
+    for name in names:
+        tokens = name.split()
+        filtered = [t for t in tokens if not ("vich" in t or "vna" in t)]
+        if len(filtered) < len(tokens):
+            new_name = " ".join(filtered)
+            if new_name:
+                enhanced.add(new_name)
+    return list(enhanced)
+
+@st.cache_resource
+def get_enhanced_lists():
+    ofac = enhance_names(ofac_names)
+    fcdo = enhance_names(fcdo_names)
+    eu = enhance_names(eu_names)
+    return ofac, fcdo, eu
+
 def get_top_matches(query, choices, n=3):
     query_norm = normalize(query)
     choices_norm = [normalize(c) for c in choices]
@@ -51,12 +70,13 @@ with st.expander('Input Table', expanded=False):
 
 # Results table below title and above input
 if not input_df.empty and input_df['Names'].str.strip().any():
+    ofac_enh, fcdo_enh, eu_enh = get_enhanced_lists()
     ofac_result = []
     fcdo_result = []
     eu_result = []
     for name in input_df['Names'].dropna():
         # OFAC matches
-        ofac_matches = get_top_matches(name, ofac_names)
+        ofac_matches = get_top_matches(name, ofac_enh)
         ofac_filtered = [m for m in ofac_matches if m[1] >= threshold]
         if ofac_filtered:
             ofac_str = ', '.join([f"{m[0]} ({m[1]})" for m in ofac_filtered])
@@ -64,7 +84,7 @@ if not input_df.empty and input_df['Names'].str.strip().any():
             ofac_str = ''
         ofac_result.append(ofac_str)
         # FCDO matches
-        fcdo_matches = get_top_matches(name, fcdo_names)
+        fcdo_matches = get_top_matches(name, fcdo_enh)
         fcdo_filtered = [m for m in fcdo_matches if m[1] >= threshold]
         if fcdo_filtered:
             fcdo_str = ', '.join([f"{m[0]} ({m[1]})" for m in fcdo_filtered])
@@ -72,7 +92,7 @@ if not input_df.empty and input_df['Names'].str.strip().any():
             fcdo_str = ''
         fcdo_result.append(fcdo_str)
         # EU matches
-        eu_matches = get_top_matches(name, eu_names)
+        eu_matches = get_top_matches(name, eu_enh)
         eu_filtered = [m for m in eu_matches if m[1] >= threshold]
         if eu_filtered:
             eu_str = ', '.join([f"{m[0]} ({m[1]})" for m in eu_filtered])
