@@ -30,12 +30,13 @@ def get_top_matches(query, choices, n=3):
     return [(choices[i], int(round(score))) for (_, score, i) in results]
 
 
+
 st.set_page_config(layout="wide")
 
 # Title and sensitivity slider across the top
 st.title('OFAC Fuzzy Matcher')
 st.write('Paste a column of names from Excel below:')
-threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70)
+threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70, key='threshold_slider')
 
 # Two columns for input and output
 col1, col2 = st.columns(2)
