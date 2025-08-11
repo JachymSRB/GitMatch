@@ -34,6 +34,8 @@ st.write('Paste a column of names from Excel below:')
 
 
 # Session state for input table
+
+# Session state for input table
 if 'input_df' not in st.session_state:
     st.session_state['input_df'] = pd.DataFrame({'Names': ['']})
 
@@ -41,7 +43,16 @@ if 'input_df' not in st.session_state:
 if st.button('Clear Table'):
     st.session_state['input_df'] = pd.DataFrame({'Names': ['']})
 
-input_df = st.data_editor(st.session_state['input_df'], num_rows="dynamic", use_container_width=True)
+# Editable table
+input_df = st.data_editor(
+    st.session_state['input_df'],
+    num_rows="dynamic",
+    use_container_width=True,
+    key='editable_table'
+)
+
+# Update session state with edits
+st.session_state['input_df'] = input_df
 
 if not input_df.empty and input_df['Names'].str.strip().any():
     result = []
