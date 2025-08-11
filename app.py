@@ -3,6 +3,7 @@ import pandas as pd
 import re
 from rapidfuzz import process, fuzz
 from fcdo_loader import load_fcdo_names
+from eu_loader import load_eu_names
 
 # Load OFAC data
 @st.cache_data
@@ -13,8 +14,10 @@ def load_ofac():
     return names
 
 
+
 ofac_names = load_ofac()
 fcdo_names = load_fcdo_names('FCDO_SL_Mon_Aug 11 2025.ods')
+eu_names = load_eu_names('20250801-FULL-1_0.csv')
 
 def normalize(text):
     # Remove special characters, lowercase, and tokenize
@@ -50,6 +53,7 @@ with st.expander('Input Table', expanded=False):
 if not input_df.empty and input_df['Names'].str.strip().any():
     ofac_result = []
     fcdo_result = []
+    eu_result = []
     for name in input_df['Names'].dropna():
         # OFAC matches
         ofac_matches = get_top_matches(name, ofac_names)
@@ -67,7 +71,15 @@ if not input_df.empty and input_df['Names'].str.strip().any():
         else:
             fcdo_str = ''
         fcdo_result.append(fcdo_str)
-    output_df = pd.DataFrame({'Names': input_df['Names'], 'OFAC Matches': ofac_result, 'FCDO Matches': fcdo_result})
+        # EU matches
+        eu_matches = get_top_matches(name, eu_names)
+        eu_filtered = [m for m in eu_matches if m[1] >= threshold]
+        if eu_filtered:
+            eu_str = ', '.join([f"{m[0]} ({m[1]})" for m in eu_filtered])
+        else:
+            eu_str = ''
+        eu_result.append(eu_str)
+    output_df = pd.DataFrame({'Names': input_df['Names'], 'OFAC Matches': ofac_result, 'FCDO Matches': fcdo_result, 'EU Matches': eu_result})
     st.dataframe(output_df, use_container_width=True, hide_index=True)
 else:
     st.info('Enter names to see matches.')
