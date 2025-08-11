@@ -32,7 +32,16 @@ def get_top_matches(query, choices, n=3):
 st.title('OFAC Fuzzy Matcher')
 st.write('Paste a column of names from Excel below:')
 
-input_df = st.data_editor(pd.DataFrame({'Names': ['']}), num_rows="dynamic", use_container_width=True)
+
+# Session state for input table
+if 'input_df' not in st.session_state:
+    st.session_state['input_df'] = pd.DataFrame({'Names': ['']})
+
+# Button to clear the table
+if st.button('Clear Table'):
+    st.session_state['input_df'] = pd.DataFrame({'Names': ['']})
+
+input_df = st.data_editor(st.session_state['input_df'], num_rows="dynamic", use_container_width=True)
 
 if not input_df.empty and input_df['Names'].str.strip().any():
     result = []
