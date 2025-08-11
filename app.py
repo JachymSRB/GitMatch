@@ -54,7 +54,7 @@ with col2:
             else:
                 match_str = ''
             result.append(match_str)
-    output_df = pd.DataFrame({'Top Matches': result})
-    st.table(output_df)
+        output_df = pd.DataFrame({'Top Matches': result})
+        st.table(output_df)
     else:
         st.info('Enter names to see matches.')
