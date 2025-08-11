@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 from rapidfuzz import process, fuzz
+from fcdo_loader import load_fcdo_names
 
 # Load OFAC data
 @st.cache_data
@@ -11,7 +12,9 @@ def load_ofac():
     names = df.iloc[:, 3].astype(str).tolist()
     return names
 
+
 ofac_names = load_ofac()
+fcdo_names = load_fcdo_names('FCDO_SL_Mon_Aug 11 2025.ods')
 
 def normalize(text):
     # Remove special characters, lowercase, and tokenize
@@ -37,25 +40,34 @@ threshold = st.slider('Minimum match score threshold', min_value=0, max_value=10
 
 
 # Layout: input 1 wide, output 3 wide
-col1, col2 = st.columns([1, 3])
+
+col1, col2 = st.columns(2)
 
 with col1:
-    input_df = pd.DataFrame({'Names': ['']})
-    st.table(input_df)
+    input_df = st.data_editor(pd.DataFrame({'Names': ['']}), num_rows="dynamic", use_container_width=True)
 
 with col2:
     if not input_df.empty and input_df['Names'].str.strip().any():
-        result = []
+        ofac_result = []
+        fcdo_result = []
         for name in input_df['Names'].dropna():
-            matches = get_top_matches(name, ofac_names)
-            # Filter matches by threshold
-            filtered = [m for m in matches if m[1] >= threshold]
-            if filtered:
-                match_str = ', '.join([f"{m[0]} ({m[1]})" for m in filtered])
+            # OFAC matches
+            ofac_matches = get_top_matches(name, ofac_names)
+            ofac_filtered = [m for m in ofac_matches if m[1] >= threshold]
+            if ofac_filtered:
+                ofac_str = ', '.join([f"{m[0]} ({m[1]})" for m in ofac_filtered])
             else:
-                match_str = ''
-            result.append(match_str)
-        output_df = pd.DataFrame({'Top Matches': result})
-        st.table(output_df)
+                ofac_str = ''
+            ofac_result.append(ofac_str)
+            # FCDO matches
+            fcdo_matches = get_top_matches(name, fcdo_names)
+            fcdo_filtered = [m for m in fcdo_matches if m[1] >= threshold]
+            if fcdo_filtered:
+                fcdo_str = ', '.join([f"{m[0]} ({m[1]})" for m in fcdo_filtered])
+            else:
+                fcdo_str = ''
+            fcdo_result.append(fcdo_str)
+        output_df = pd.DataFrame({'Names': input_df['Names'], 'OFAC Matches': ofac_result, 'FCDO Matches': fcdo_result})
+        st.dataframe(output_df, use_container_width=True, hide_index=True)
     else:
         st.info('Enter names to see matches.')
