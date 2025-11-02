@@ -225,5 +225,9 @@ if not input_df.empty and input_df['Names'].str.strip().any():
         eu_result.append(eu_str)
     output_df = pd.DataFrame({'Names': input_df['Names'], 'OFAC Matches': ofac_result, 'FCDO Matches': fcdo_result, 'EU Matches': eu_result})
     st.dataframe(output_df, use_container_width=True, hide_index=True)
+
+    # Add download button for the output CSV
+    csv = output_df.to_csv(index=False).encode('utf-8')
+    st.download_button(label='Download results as CSV', data=csv, file_name='matches.csv', mime='text/csv')
 else:
     st.info('Enter names to see matches.')
