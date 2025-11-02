@@ -161,39 +161,31 @@ st.write('Paste a column of names from Excel below:')
 threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70, key='threshold_slider')
 
 # Advanced controls in a collapsed expander
-with st.expander('Advanced', expanded=False):
-    jaccard_thresh = st.slider('Jaccard n-gram threshold', min_value=0.0, max_value=1.0, value=0.18, step=0.01, key='jaccard_thresh')
-    length_frac = st.slider('Max relative length difference', min_value=0.0, max_value=1.0, value=0.5, step=0.01, key='length_frac')
-    score_cutoff = st.slider('RapidFuzz score cutoff (early exit)', min_value=0, max_value=100, value=threshold, key='score_cutoff')
-    ngram_n = st.slider('N-gram size (for blocking)', min_value=2, max_value=5, value=3, step=1, key='ngram_n')
-    require_first_letter = st.checkbox('Require same first letter', value=False, key='require_first_letter')
-    top_n = st.number_input('Results per list', min_value=1, max_value=10, value=3, step=1, key='top_n')
+adv_defaults = {
+    'jaccard_thresh': 0.18,
+    'length_frac': 0.5,
+    'score_cutoff': None,  # will default to threshold if None
+    'ngram_n': 3,
+    'require_first_letter': False,
+    'top_n': 3
+}
 
-# If the user didn't open Advanced, provide defaults for those vars
-try:
-    jaccard_thresh
-except NameError:
-    jaccard_thresh = 0.18
-try:
-    length_frac
-except NameError:
-    length_frac = 0.5
-try:
-    score_cutoff
-except NameError:
-    score_cutoff = threshold
-try:
-    ngram_n
-except NameError:
-    ngram_n = 3
-try:
-    require_first_letter
-except NameError:
-    require_first_letter = False
-try:
-    top_n
-except NameError:
-    top_n = 3
+with st.expander('Advanced', expanded=False):
+    # use prefixed keys so they don't collide with other widgets
+    st.slider('Jaccard n-gram threshold', min_value=0.0, max_value=1.0, value=adv_defaults['jaccard_thresh'], step=0.01, key='adv_jaccard_thresh')
+    st.slider('Max relative length difference', min_value=0.0, max_value=1.0, value=adv_defaults['length_frac'], step=0.01, key='adv_length_frac')
+    st.slider('RapidFuzz score cutoff (early exit)', min_value=0, max_value=100, value=threshold, key='adv_score_cutoff')
+    st.slider('N-gram size (for blocking)', min_value=2, max_value=5, value=adv_defaults['ngram_n'], step=1, key='adv_ngram_n')
+    st.checkbox('Require same first letter', value=adv_defaults['require_first_letter'], key='adv_require_first_letter')
+    st.number_input('Results per list', min_value=1, max_value=10, value=adv_defaults['top_n'], step=1, key='adv_top_n')
+
+# Read advanced settings (use defaults if widget not rendered yet)
+jaccard_thresh = st.session_state.get('adv_jaccard_thresh', adv_defaults['jaccard_thresh'])
+length_frac = st.session_state.get('adv_length_frac', adv_defaults['length_frac'])
+score_cutoff = st.session_state.get('adv_score_cutoff', threshold if adv_defaults['score_cutoff'] is None else adv_defaults['score_cutoff'])
+ngram_n = st.session_state.get('adv_ngram_n', adv_defaults['ngram_n'])
+require_first_letter = st.session_state.get('adv_require_first_letter', adv_defaults['require_first_letter'])
+top_n = st.session_state.get('adv_top_n', adv_defaults['top_n'])
 
 # Editable input table in expander
 with st.expander('Input Table', expanded=False):
