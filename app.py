@@ -637,6 +637,11 @@ if not input_df.empty and input_df['Names'].str.strip().any():
 else:
     st.info('Enter names to see matches.')
 
+# NOTE: The previous auto-download helper functions (direct endpoint probes and Playwright-based
+# download) were removed because they were unreliable on Streamlit Community Cloud and
+# introduced maintenance/installation complexity. We use the BeautifulSoup-based
+# probe_and_fetch_fcdo(...) function elsewhere to attempt lightweight scraping instead.
+
 def install_playwright_browsers() -> tuple:
     """Run the Playwright CLI to install browsers. Returns (success: bool, output: str)."""
     try:
