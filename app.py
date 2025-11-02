@@ -40,6 +40,9 @@ def load_eu_from(path: str):
 # Try direct known endpoints for the UK Sanctions List export (lightweight, no headless browser)
 def try_direct_fcdo_export(save_dir: Path) -> tuple:
     """Attempt to fetch the FCDO export from a list of candidate endpoints.
+    Tries GET and a fallback POST. Detects filename from Content-Disposition or URL.
+    Saves the file using the server-provided filename and also writes a standardized copy
+    as FCDO.csv or FCDO.ods so the rest of the app can find it.
     Returns (success: bool, message: str, saved_path: Path|None)
     """
     candidates = [
@@ -47,37 +50,79 @@ def try_direct_fcdo_export(save_dir: Path) -> tuple:
         'https://search-uk-sanctions-list.service.gov.uk/export',
         'https://search-uk-sanctions-list.service.gov.uk/search/export?format=csv',
         'https://search-uk-sanctions-list.service.gov.uk/export?format=csv',
-        # Some sites use JSON endpoints that accept query params; try a generic download link (may 404)
         'https://search-uk-sanctions-list.service.gov.uk/download?format=csv'
     ]
 
     headers = {
-        'User-Agent': 'GitMatch/1.0 (+https://github.com)'
+        'User-Agent': 'GitMatch/1.0 (+https://github.com)',
+        'Accept': '*/*'
     }
 
+    def extract_filename(resp, url):
+        cd = resp.headers.get('content-disposition') or resp.headers.get('Content-Disposition')
+        if cd:
+            # try filename*=UTF-8''name or filename="name"
+            import re
+            m = re.search(r"filename\*=[^']*'[^']*'(?P<f>[^;\n\r]+)", cd)
+            if m:
+                return m.group('f')
+            m = re.search(r'filename="?(?P<f>[^";]+)"?', cd)
+            if m:
+                return m.group('f')
+        # fallback to last part of URL path
+        from urllib.parse import urlparse, unquote
+        path = urlparse(url).path
+        name = Path(unquote(path)).name
+        if name:
+            return name
+        return None
+
     for url in candidates:
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-        except Exception as e:
-            continue
-        if not resp.ok:
-            continue
-        content = resp.content
-        # quick heuristic: check for CSV-like content (commas and newline) or XML/ODS
-        text_snippet = content[:1024].decode('utf-8', errors='ignore')
-        if ',' in text_snippet or 'Name' in text_snippet or 'name' in text_snippet:
-            # likely CSV
-            save_path = save_dir / 'FCDO.csv'
-            with open(save_path, 'wb') as f:
-                f.write(content)
-            return True, f'Downloaded FCDO CSV from {url}', save_path
-        # If server returned an ODS or other binary, try saving with .ods
-        if b'PK\x03\x04' in content[:4] or b'opacity' in content[:200]:
-            # not a reliable test, but save as .ods anyway
-            save_path = save_dir / 'FCDO.ods'
-            with open(save_path, 'wb') as f:
-                f.write(content)
-            return True, f'Downloaded FCDO binary from {url}', save_path
+        # try GET
+        for method in ('get', 'post'):
+            try:
+                if method == 'get':
+                    resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+                else:
+                    # try a generic POST that some endpoints accept to trigger export
+                    resp = requests.post(url, headers=headers, timeout=20, data={'format': 'csv'}, allow_redirects=True)
+            except Exception:
+                continue
+            if not resp.ok:
+                continue
+            content = resp.content
+            # determine filename
+            fname = extract_filename(resp, resp.url)
+            # simple heuristics for type
+            ctype = resp.headers.get('content-type', '').lower()
+            is_csv = 'csv' in ctype or 'text' in ctype or b',' in content[:1024]
+            is_ods = content[:4].startswith(b'PK\x03\x04') or ctype.startswith('application/vnd.oasis') or resp.url.lower().endswith('.ods')
+
+            if not fname:
+                fname = 'fcdo_export.ods' if is_ods else 'fcdo_export.csv'
+
+            # ensure proper extension
+            ext = '.ods' if is_ods else '.csv'
+            if not fname.lower().endswith(ext):
+                fname = Path(fname).stem + ext
+
+            save_path = save_dir / fname
+            try:
+                with open(save_path, 'wb') as f:
+                    f.write(content)
+            except Exception as e:
+                return False, f'Failed to write file from {url}: {e}', None
+
+            # also save a standardized copy so the rest of the app can find it
+            std_name = save_dir / ('FCDO' + ext)
+            try:
+                with open(std_name, 'wb') as f:
+                    f.write(content)
+            except Exception:
+                pass
+
+            msg = f'Downloaded FCDO file from {url} and saved as {save_path.name} (also copied to {std_name.name})'
+            return True, msg, save_path
     return False, 'No direct export endpoint found among candidates', None
 
 # Determine default fallback files included with the app (if present)
