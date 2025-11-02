@@ -8,6 +8,8 @@ from eu_loader import load_eu_names
 import os
 from pathlib import Path
 import requests
+import subprocess
+import shutil
 
 DATA_DIR = Path('data')
 DATA_DIR.mkdir(exist_ok=True)
@@ -198,6 +200,27 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
     st.markdown('- EU consolidated list: https://data.europa.eu/data/datasets/consolidated-list-of-persons-groups-and-entities-subject-to-eu-financial-sanctions?locale=en')
     st.markdown('- FCDO UK sanctions list search: https://search-uk-sanctions-list.service.gov.uk')
     st.markdown('- OFAC SDN CSV export: https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV')
+
+    # Playwright browser install helper UI
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+        # check for browser cache dir presence
+        cache_dir = Path.home() / '.cache' / 'ms-playwright'
+        browsers_installed = cache_dir.exists() and any(cache_dir.iterdir())
+    except Exception:
+        browsers_installed = False
+
+    if not browsers_installed:
+        st.warning('Playwright browsers not found. To auto-download FCDO with Playwright you must install the browsers.')
+        if st.button('Install Playwright browsers (may require sudo/network)', key='install_playwright'):
+            with st.spinner('Running playwright install (this can take a minute)...'):
+                ok, out = install_playwright_browsers()
+                if ok:
+                    st.success('Playwright browsers installed successfully')
+                    st.code(out)
+                else:
+                    st.error('Playwright browser install failed')
+                    st.code(out)
 
     uploaded_ofac = st.file_uploader('Upload OFAC CSV', type=['csv'], key='upload_ofac')
     uploaded_fcdo = st.file_uploader('Upload FCDO .ods', type=['ods', 'csv'], key='upload_fcdo')
@@ -492,3 +515,16 @@ if not input_df.empty and input_df['Names'].str.strip().any():
     st.download_button(label='Download results as CSV', data=csv, file_name='matches.csv', mime='text/csv')
 else:
     st.info('Enter names to see matches.')
+
+def install_playwright_browsers() -> tuple:
+    """Run the Playwright CLI to install browsers. Returns (success: bool, output: str)."""
+    try:
+        cli = shutil.which('playwright') or 'playwright'
+        proc = subprocess.run([cli, 'install', '--with-deps'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900)
+        return (proc.returncode == 0, proc.stdout)
+    except FileNotFoundError:
+        return False, 'playwright CLI not found. Install Playwright in this environment (pip install playwright)'
+    except subprocess.TimeoutExpired:
+        return False, 'playwright install timed out'
+    except Exception as e:
+        return False, f'playwright install failed: {e}'
