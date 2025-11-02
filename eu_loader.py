@@ -10,9 +10,20 @@ def load_eu_names(path):
     cols = list(df.columns)
     col_low = [str(c).lower() for c in cols]
 
-    # Look for common column names used in EU exports
+    # Prefer exact 'NameAlias_WholeName' (case-insensitive) or close variants
     for i, c in enumerate(col_low):
-        if 'wholename' in c.replace('_', '') or ('whole' in c and 'name' in c) or 'namealias' in c or c.strip() == 'naal_wholename' or c.strip() == 'naal_wholename':
+        clean = c.replace('.', '_').replace(' ', '_')
+        if clean == 'namealias_wholename' or clean == 'namealiaswhole_name' or clean == 'namealiaswhole' or clean == 'namealias_whole':
+            return df[cols[i]].dropna().astype(str).tolist()
+
+    # Accept columns that contain both 'namealias' and 'whole' (robust to separators)
+    for i, c in enumerate(col_low):
+        if 'namealias' in c and 'whole' in c:
+            return df[cols[i]].dropna().astype(str).tolist()
+
+    # Then accept any column that looks like a whole-name column
+    for i, c in enumerate(col_low):
+        if 'wholename' in c or ('whole' in c and 'name' in c):
             return df[cols[i]].dropna().astype(str).tolist()
 
     # Next, pick any column containing the substring 'name'
