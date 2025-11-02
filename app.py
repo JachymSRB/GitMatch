@@ -7,6 +7,7 @@ from fcdo_loader import load_fcdo_names
 from eu_loader import load_eu_names
 import os
 from pathlib import Path
+import requests
 
 DATA_DIR = Path('data')
 DATA_DIR.mkdir(exist_ok=True)
@@ -36,6 +37,49 @@ def load_fcdo_from(path: str):
 def load_eu_from(path: str):
     return load_eu_names(path)
 
+# Try direct known endpoints for the UK Sanctions List export (lightweight, no headless browser)
+def try_direct_fcdo_export(save_dir: Path) -> tuple:
+    """Attempt to fetch the FCDO export from a list of candidate endpoints.
+    Returns (success: bool, message: str, saved_path: Path|None)
+    """
+    candidates = [
+        'https://search-uk-sanctions-list.service.gov.uk/search/export',
+        'https://search-uk-sanctions-list.service.gov.uk/export',
+        'https://search-uk-sanctions-list.service.gov.uk/search/export?format=csv',
+        'https://search-uk-sanctions-list.service.gov.uk/export?format=csv',
+        # Some sites use JSON endpoints that accept query params; try a generic download link (may 404)
+        'https://search-uk-sanctions-list.service.gov.uk/download?format=csv'
+    ]
+
+    headers = {
+        'User-Agent': 'GitMatch/1.0 (+https://github.com)'
+    }
+
+    for url in candidates:
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+        except Exception as e:
+            continue
+        if not resp.ok:
+            continue
+        content = resp.content
+        # quick heuristic: check for CSV-like content (commas and newline) or XML/ODS
+        text_snippet = content[:1024].decode('utf-8', errors='ignore')
+        if ',' in text_snippet or 'Name' in text_snippet or 'name' in text_snippet:
+            # likely CSV
+            save_path = save_dir / 'FCDO.csv'
+            with open(save_path, 'wb') as f:
+                f.write(content)
+            return True, f'Downloaded FCDO CSV from {url}', save_path
+        # If server returned an ODS or other binary, try saving with .ods
+        if b'PK\x03\x04' in content[:4] or b'opacity' in content[:200]:
+            # not a reliable test, but save as .ods anyway
+            save_path = save_dir / 'FCDO.ods'
+            with open(save_path, 'wb') as f:
+                f.write(content)
+            return True, f'Downloaded FCDO binary from {url}', save_path
+    return False, 'No direct export endpoint found among candidates', None
+
 # Determine default fallback files included with the app (if present)
 # Accept 'sdn.csv' (common SDN export filename) first, then fallback to 'OFAC.csv' if present
 FALLBACK_OFAC = Path('sdn.csv') if Path('sdn.csv').exists() else (Path('OFAC.csv') if Path('OFAC.csv').exists() else None)
@@ -50,7 +94,7 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
     st.markdown('- OFAC SDN CSV export: https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV')
 
     uploaded_ofac = st.file_uploader('Upload OFAC CSV', type=['csv'], key='upload_ofac')
-    uploaded_fcdo = st.file_uploader('Upload FCDO .ods', type=['ods'], key='upload_fcdo')
+    uploaded_fcdo = st.file_uploader('Upload FCDO .ods', type=['ods', 'csv'], key='upload_fcdo')
     uploaded_eu = st.file_uploader('Upload EU CSV', type=['csv', 'txt'], key='upload_eu')
 
     # Save uploads to data folder if provided
@@ -67,9 +111,20 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
         save_uploaded_file(uploaded_eu, target)
         st.success(f'EU list saved to {target}')
 
+    # Auto-download direct attempt button
+    if st.button('Try auto-download FCDO (direct endpoints)', key='auto_fcdo_direct'):
+        try:
+            success, msg, saved = try_direct_fcdo_export(DATA_DIR)
+            if success:
+                st.success(msg)
+            else:
+                st.warning(msg)
+        except Exception as e:
+            st.error(f'Auto-download failed: {e}')
+
     # Show currently available files (data dir or fallbacks)
     ofac_path = DATA_DIR / 'OFAC.csv' if (DATA_DIR / 'OFAC.csv').exists() else (FALLBACK_OFAC if FALLBACK_OFAC is not None else None)
-    fcdo_path = DATA_DIR / 'FCDO.ods' if (DATA_DIR / 'FCDO.ods').exists() else (FALLBACK_FCDO if FALLBACK_FCDO is not None else None)
+    fcdo_path = DATA_DIR / 'FCDO.ods' if (DATA_DIR / 'FCDO.ods').exists() else (DATA_DIR / 'FCDO.csv' if (DATA_DIR / 'FCDO.csv').exists() else (FALLBACK_FCDO if FALLBACK_FCDO is not None else None))
     eu_path = DATA_DIR / 'EU.csv' if (DATA_DIR / 'EU.csv').exists() else (FALLBACK_EU if FALLBACK_EU is not None else None)
 
     st.write('Current files:')
