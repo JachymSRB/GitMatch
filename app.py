@@ -5,19 +5,110 @@ import unicodedata
 from rapidfuzz import process, fuzz
 from fcdo_loader import load_fcdo_names
 from eu_loader import load_eu_names
+import os
+from pathlib import Path
 
-# Load OFAC data
+DATA_DIR = Path('data')
+DATA_DIR.mkdir(exist_ok=True)
+
+# Helpers to save uploads
+def save_uploaded_file(uploaded, target_path: Path):
+    if uploaded is None:
+        return None
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(target_path, 'wb') as f:
+        f.write(uploaded.getbuffer())
+    return target_path
+
+# Cached loaders that read from a file path. Cache keyed by path so updates reload.
 @st.cache_data
-def load_ofac():
-    df = pd.read_csv('OFAC.csv', header=None)
-    # 4th column is index 3
+def load_ofac_from(path: str):
+    df = pd.read_csv(path, header=None)
     names = df.iloc[:, 3].astype(str).tolist()
     return names
 
+@st.cache_data
+def load_fcdo_from(path: str):
+    # reuse existing loader if available (fcdo_loader.load_fcdo_names expects a path)
+    return load_fcdo_names(path)
 
-ofac_names = load_ofac()
-fcdo_names = load_fcdo_names('FCDO_SL_Mon_Aug 11 2025.ods')
-eu_names = load_eu_names('20250801-FULL-1_0.csv')
+@st.cache_data
+def load_eu_from(path: str):
+    return load_eu_names(path)
+
+# Determine default fallback files included with the app (if present)
+# Accept 'sdn.csv' (common SDN export filename) first, then fallback to 'OFAC.csv' if present
+FALLBACK_OFAC = Path('sdn.csv') if Path('sdn.csv').exists() else (Path('OFAC.csv') if Path('OFAC.csv').exists() else None)
+FALLBACK_FCDO = Path('FCDO_SL_Mon_Aug 11 2025.ods') if Path('FCDO_SL_Mon_Aug 11 2025.ods').exists() else None
+FALLBACK_EU = Path('20250801-FULL-1_0.csv') if Path('20250801-FULL-1_0.csv').exists() else None
+
+# Data sources UI in a collapsed expander
+with st.expander('Data sources (upload or use local files)', expanded=False):
+    st.write('You can upload the sanction lists here. Uploaded files are saved to the app server and reused across runs until replaced.')
+    st.markdown('- EU consolidated list: https://data.europa.eu/data/datasets/consolidated-list-of-persons-groups-and-entities-subject-to-eu-financial-sanctions?locale=en')
+    st.markdown('- FCDO UK sanctions list search: https://search-uk-sanctions-list.service.gov.uk')
+    st.markdown('- OFAC SDN CSV export: https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV')
+
+    uploaded_ofac = st.file_uploader('Upload OFAC CSV', type=['csv'], key='upload_ofac')
+    uploaded_fcdo = st.file_uploader('Upload FCDO .ods', type=['ods'], key='upload_fcdo')
+    uploaded_eu = st.file_uploader('Upload EU CSV', type=['csv', 'txt'], key='upload_eu')
+
+    # Save uploads to data folder if provided
+    if uploaded_ofac is not None:
+        target = DATA_DIR / 'OFAC.csv'
+        save_uploaded_file(uploaded_ofac, target)
+        st.success(f'OFAC saved to {target}')
+    if uploaded_fcdo is not None:
+        target = DATA_DIR / 'FCDO.ods'
+        save_uploaded_file(uploaded_fcdo, target)
+        st.success(f'FCDO saved to {target}')
+    if uploaded_eu is not None:
+        target = DATA_DIR / 'EU.csv'
+        save_uploaded_file(uploaded_eu, target)
+        st.success(f'EU list saved to {target}')
+
+    # Show currently available files (data dir or fallbacks)
+    ofac_path = DATA_DIR / 'OFAC.csv' if (DATA_DIR / 'OFAC.csv').exists() else (FALLBACK_OFAC if FALLBACK_OFAC is not None else None)
+    fcdo_path = DATA_DIR / 'FCDO.ods' if (DATA_DIR / 'FCDO.ods').exists() else (FALLBACK_FCDO if FALLBACK_FCDO is not None else None)
+    eu_path = DATA_DIR / 'EU.csv' if (DATA_DIR / 'EU.csv').exists() else (FALLBACK_EU if FALLBACK_EU is not None else None)
+
+    st.write('Current files:')
+    cols = st.columns(3)
+    with cols[0]:
+        st.write('OFAC:')
+        if ofac_path:
+            st.write(ofac_path.name)
+            with open(ofac_path, 'rb') as f:
+                st.download_button('Download OFAC file', f.read(), file_name=ofac_path.name, mime='text/csv')
+        else:
+            st.info('No OFAC file available')
+    with cols[1]:
+        st.write('FCDO:')
+        if fcdo_path:
+            st.write(fcdo_path.name)
+            with open(fcdo_path, 'rb') as f:
+                st.download_button('Download FCDO file', f.read(), file_name=fcdo_path.name, mime='application/vnd.oasis.opendocument.spreadsheet')
+        else:
+            st.info('No FCDO file available')
+    with cols[2]:
+        st.write('EU:')
+        if eu_path:
+            st.write(eu_path.name)
+            with open(eu_path, 'rb') as f:
+                st.download_button('Download EU file', f.read(), file_name=eu_path.name, mime='text/csv')
+        else:
+            st.info('No EU file available')
+
+# Load name lists using saved files (or fallbacks)
+ofac_names = []
+fcdo_names = []
+eu_names = []
+if ofac_path:
+    ofac_names = load_ofac_from(str(ofac_path))
+if fcdo_path:
+    fcdo_names = load_fcdo_from(str(fcdo_path))
+if eu_path:
+    eu_names = load_eu_from(str(eu_path))
 
 # Normalization utilities
 def normalize(text: str) -> str:
