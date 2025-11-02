@@ -10,6 +10,7 @@ from pathlib import Path
 import requests
 import subprocess
 import shutil
+from bs4 import BeautifulSoup
 
 DATA_DIR = Path('data')
 DATA_DIR.mkdir(exist_ok=True)
@@ -188,6 +189,117 @@ def auto_download_fcdo_playwright(save_dir: Path) -> tuple:
     except Exception as e:
         return False, f'Playwright run failed: {e}', None
 
+def probe_and_fetch_fcdo(save_dir: Path, base_url: str = 'https://search-uk-sanctions-list.service.gov.uk') -> tuple:
+    """Fetch the page, extract candidate URLs from links and inline scripts, try them and save CSV/ODS if found.
+    Returns (success: bool, message: str, saved_path: Path|None).
+    """
+    try:
+        resp = requests.get(base_url, timeout=20)
+    except Exception as e:
+        return False, f'Failed to fetch base page: {e}', None
+    if not resp.ok:
+        return False, f'Failed to fetch base page, status {resp.status_code}', None
+
+    text = resp.text
+    soup = BeautifulSoup(text, 'html.parser')
+    candidates = set()
+
+    # collect hrefs
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        if any(k in href.lower() for k in ('export', 'download', '.csv', '.ods', 'api', 'download-results', 'results')):
+            candidates.add(requests.compat.urljoin(base_url, href))
+
+    # collect script src
+    for s in soup.find_all('script', src=True):
+        src = s['src']
+        if any(k in src.lower() for k in ('export', 'download', '.csv', '.ods', 'api')):
+            candidates.add(requests.compat.urljoin(base_url, src))
+
+    # scan inline scripts for URLs
+    import re
+    urls = re.findall(r"https?://[\w\-\./?=&%]+", text)
+    for u in urls:
+        if any(k in u.lower() for k in ('export', 'download', '.csv', '.ods', 'api', 'results')):
+            candidates.add(u)
+
+    # also add some reasonable guesses
+    guesses = [
+        base_url + '/search/export',
+        base_url + '/export',
+        base_url + '/search/export?format=csv',
+        base_url + '/export?format=csv',
+        base_url + '/download?format=csv'
+    ]
+    candidates.update(guesses)
+
+    if not candidates:
+        return False, 'No candidate URLs discovered on page', None
+
+    headers = {'User-Agent': 'GitMatch/1.0 (+https://github.com)'}
+
+    for url in list(candidates):
+        # try GET then POST with a format=csv param
+        for method in ('get', 'post'):
+            try:
+                if method == 'get':
+                    r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+                else:
+                    r = requests.post(url, headers=headers, timeout=20, data={'format': 'csv'}, allow_redirects=True)
+            except Exception:
+                continue
+            if not r.ok:
+                continue
+            content = r.content
+            ctype = r.headers.get('content-type', '').lower()
+            is_csv = 'csv' in ctype or 'text' in ctype or b',' in content[:1024]
+            is_ods = content[:4].startswith(b'PK\x03\x04') or 'vnd.oasis' in ctype or url.lower().endswith('.ods')
+
+            if not is_csv and not is_ods:
+                # skip if content doesn't look like export
+                continue
+
+            # derive filename
+            fname = None
+            cd = r.headers.get('content-disposition') or r.headers.get('Content-Disposition')
+            if cd:
+                m = re.search(r"filename\*=[^']*'[^']*'(?P<f>[^;\n\r]+)", cd)
+                if m:
+                    fname = m.group('f')
+                else:
+                    m = re.search(r'filename="?(?P<f>[^";]+)"?', cd)
+                    if m:
+                        fname = m.group('f')
+            if not fname:
+                from urllib.parse import urlparse, unquote
+                p = urlparse(r.url)
+                fname = Path(unquote(p.path)).name or None
+            if not fname:
+                fname = 'fcdo_export.ods' if is_ods else 'fcdo_export.csv'
+
+            ext = '.ods' if is_ods else '.csv'
+            if not fname.lower().endswith(ext):
+                fname = Path(fname).stem + ext
+
+            save_path = save_dir / fname
+            try:
+                with open(save_path, 'wb') as f:
+                    f.write(content)
+            except Exception as e:
+                return False, f'Failed to write file from {url}: {e}', None
+
+            # standardized copy
+            std_name = save_dir / ('FCDO' + ext)
+            try:
+                with open(std_name, 'wb') as f:
+                    f.write(content)
+            except Exception:
+                pass
+
+            return True, f'Downloaded FCDO file from {url} and saved as {save_path.name} (std copy {std_name.name})', save_path
+
+    return False, 'Tried candidate URLs but none returned a CSV/ODS export', None
+
 # Determine default fallback files included with the app (if present)
 # Accept 'sdn.csv' (common SDN export filename) first, then fallback to 'OFAC.csv' if present
 FALLBACK_OFAC = Path('sdn.csv') if Path('sdn.csv').exists() else (Path('OFAC.csv') if Path('OFAC.csv').exists() else None)
@@ -255,6 +367,15 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
     if st.button('Auto-download FCDO (Playwright)', key='auto_fcdo_playwright'):
         with st.spinner('Running headless browser to download FCDO export...'):
             success, msg, saved = auto_download_fcdo_playwright(DATA_DIR)
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
+
+    # Probe and fetch FCDO button
+    if st.button('Probe and fetch FCDO (from page)', key='probe_fcdo'):
+        with st.spinner('Probing UK sanctions page for export links...'):
+            success, msg, saved = probe_and_fetch_fcdo(DATA_DIR)
             if success:
                 st.success(msg)
             else:
