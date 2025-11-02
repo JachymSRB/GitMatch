@@ -40,302 +40,15 @@ def load_fcdo_from(path: str):
 def load_eu_from(path: str):
     return load_eu_names(path)
 
-# Try direct known endpoints for the UK Sanctions List export (lightweight, no headless browser)
-def try_direct_fcdo_export(save_dir: Path) -> tuple:
-    """Attempt to fetch the FCDO export from a list of candidate endpoints.
-    Tries GET and a fallback POST. Detects filename from Content-Disposition or URL.
-    Saves the file using the server-provided filename and also writes a standardized copy
-    as FCDO.csv or FCDO.ods so the rest of the app can find it.
-    Returns (success: bool, message: str, saved_path: Path|None)
-    """
-    candidates = [
-        'https://search-uk-sanctions-list.service.gov.uk/search/export',
-        'https://search-uk-sanctions-list.service.gov.uk/export',
-        'https://search-uk-sanctions-list.service.gov.uk/search/export?format=csv',
-        'https://search-uk-sanctions-list.service.gov.uk/export?format=csv',
-        'https://search-uk-sanctions-list.service.gov.uk/download?format=csv'
-    ]
-
-    headers = {
-        'User-Agent': 'GitMatch/1.0 (+https://github.com)',
-        'Accept': '*/*'
-    }
-
-    def extract_filename(resp, url):
-        cd = resp.headers.get('content-disposition') or resp.headers.get('Content-Disposition')
-        if cd:
-            # try filename*=UTF-8''name or filename="name"
-            import re
-            m = re.search(r"filename\*=[^']*'[^']*'(?P<f>[^;\n\r]+)", cd)
-            if m:
-                return m.group('f')
-            m = re.search(r'filename="?(?P<f>[^";]+)"?', cd)
-            if m:
-                return m.group('f')
-        # fallback to last part of URL path
-        from urllib.parse import urlparse, unquote
-        path = urlparse(url).path
-        name = Path(unquote(path)).name
-        if name:
-            return name
-        return None
-
-    for url in candidates:
-        # try GET
-        for method in ('get', 'post'):
-            try:
-                if method == 'get':
-                    resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
-                else:
-                    # try a generic POST that some endpoints accept to trigger export
-                    resp = requests.post(url, headers=headers, timeout=20, data={'format': 'csv'}, allow_redirects=True)
-            except Exception:
-                continue
-            if not resp.ok:
-                continue
-            content = resp.content
-            # determine filename
-            fname = extract_filename(resp, resp.url)
-            # simple heuristics for type
-            ctype = resp.headers.get('content-type', '').lower()
-            is_csv = 'csv' in ctype or 'text' in ctype or b',' in content[:1024]
-            is_ods = content[:4].startswith(b'PK\x03\x04') or ctype.startswith('application/vnd.oasis') or resp.url.lower().endswith('.ods')
-
-            if not fname:
-                fname = 'fcdo_export.ods' if is_ods else 'fcdo_export.csv'
-
-            # ensure proper extension
-            ext = '.ods' if is_ods else '.csv'
-            if not fname.lower().endswith(ext):
-                fname = Path(fname).stem + ext
-
-            save_path = save_dir / fname
-            try:
-                with open(save_path, 'wb') as f:
-                    f.write(content)
-            except Exception as e:
-                return False, f'Failed to write file from {url}: {e}', None
-
-            # also save a standardized copy so the rest of the app can find it
-            std_name = save_dir / ('FCDO' + ext)
-            try:
-                with open(std_name, 'wb') as f:
-                    f.write(content)
-            except Exception:
-                pass
-
-            msg = f'Downloaded FCDO file from {url} and saved as {save_path.name} (also copied to {std_name.name})'
-            return True, msg, save_path
-    return False, 'No direct export endpoint found among candidates', None
-
-def auto_download_fcdo_playwright(save_dir: Path) -> tuple:
-    """Use Playwright to open the UK sanctions site, click the "Download results" button and save the file.
-    Returns (success: bool, message: str, saved_path: Path|None).
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        return False, ("Playwright is not installed. To enable automatic FCDO downloads install it:\n"
-                       "pip install playwright && playwright install"), None
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto('https://search-uk-sanctions-list.service.gov.uk', timeout=60000)
-            # Wait for the download control to appear
-            try:
-                page.wait_for_selector('text="Download results"', timeout=15000)
-            except Exception:
-                # Try alternate selector
-                try:
-                    page.wait_for_selector('a:has-text("Download results")', timeout=15000)
-                except Exception as e:
-                    browser.close()
-                    return False, f'Could not find the "Download results" control on the page: {e}', None
-
-            # Trigger the download and capture it
-            try:
-                with page.expect_download(timeout=60000) as download_info:
-                    # Click the link/button that starts the export
-                    page.click('text="Download results"')
-                download = download_info.value
-            except Exception as e:
-                browser.close()
-                return False, f'Download was not triggered or timed out: {e}', None
-
-            suggested = download.suggested_filename or 'fcdo_export'
-            save_path = save_dir / suggested
-            try:
-                download.save_as(str(save_path))
-            except Exception as e:
-                browser.close()
-                return False, f'Failed to save download: {e}', None
-
-            # Standardize copy name so rest of app can find it
-            ext = Path(suggested).suffix.lower()
-            if not ext:
-                ext = '.csv'
-                save_path = save_dir / (suggested + ext)
-            std_name = save_dir / ('FCDO' + ext)
-            try:
-                import shutil
-                shutil.copyfile(save_path, std_name)
-            except Exception:
-                pass
-
-            browser.close()
-            return True, f'Downloaded FCDO file via Playwright and saved as {save_path.name}', save_path
-    except Exception as e:
-        return False, f'Playwright run failed: {e}', None
-
-def probe_and_fetch_fcdo(save_dir: Path, base_url: str = 'https://search-uk-sanctions-list.service.gov.uk') -> tuple:
-    """Fetch the page, extract candidate URLs from links and inline scripts, try them and save CSV/ODS if found.
-    Returns (success: bool, message: str, saved_path: Path|None).
-    """
-    try:
-        resp = requests.get(base_url, timeout=20)
-    except Exception as e:
-        return False, f'Failed to fetch base page: {e}', None
-    if not resp.ok:
-        return False, f'Failed to fetch base page, status {resp.status_code}', None
-
-    text = resp.text
-    soup = BeautifulSoup(text, 'html.parser')
-    candidates = set()
-
-    # collect hrefs
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        if any(k in href.lower() for k in ('export', 'download', '.csv', '.ods', 'api', 'download-results', 'results')):
-            candidates.add(requests.compat.urljoin(base_url, href))
-
-    # collect script src
-    for s in soup.find_all('script', src=True):
-        src = s['src']
-        if any(k in src.lower() for k in ('export', 'download', '.csv', '.ods', 'api')):
-            candidates.add(requests.compat.urljoin(base_url, src))
-
-    # scan inline scripts for URLs
-    import re
-    urls = re.findall(r"https?://[\w\-\./?=&%]+", text)
-    for u in urls:
-        if any(k in u.lower() for k in ('export', 'download', '.csv', '.ods', 'api', 'results')):
-            candidates.add(u)
-
-    # also add some reasonable guesses
-    guesses = [
-        base_url + '/search/export',
-        base_url + '/export',
-        base_url + '/search/export?format=csv',
-        base_url + '/export?format=csv',
-        base_url + '/download?format=csv'
-    ]
-    candidates.update(guesses)
-
-    if not candidates:
-        return False, 'No candidate URLs discovered on page', None
-
-    headers = {'User-Agent': 'GitMatch/1.0 (+https://github.com)'}
-
-    for url in list(candidates):
-        # try GET then POST with a format=csv param
-        for method in ('get', 'post'):
-            try:
-                if method == 'get':
-                    r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
-                else:
-                    r = requests.post(url, headers=headers, timeout=20, data={'format': 'csv'}, allow_redirects=True)
-            except Exception:
-                continue
-            if not r.ok:
-                continue
-            content = r.content
-            ctype = r.headers.get('content-type', '').lower()
-            is_csv = 'csv' in ctype or 'text' in ctype or b',' in content[:1024]
-            is_ods = content[:4].startswith(b'PK\x03\x04') or 'vnd.oasis' in ctype or url.lower().endswith('.ods')
-
-            if not is_csv and not is_ods:
-                # skip if content doesn't look like export
-                continue
-
-            # derive filename
-            fname = None
-            cd = r.headers.get('content-disposition') or r.headers.get('Content-Disposition')
-            if cd:
-                m = re.search(r"filename\*=[^']*'[^']*'(?P<f>[^;\n\r]+)", cd)
-                if m:
-                    fname = m.group('f')
-                else:
-                    m = re.search(r'filename="?(?P<f>[^";]+)"?', cd)
-                    if m:
-                        fname = m.group('f')
-            if not fname:
-                from urllib.parse import urlparse, unquote
-                p = urlparse(r.url)
-                fname = Path(unquote(p.path)).name or None
-            if not fname:
-                fname = 'fcdo_export.ods' if is_ods else 'fcdo_export.csv'
-
-            ext = '.ods' if is_ods else '.csv'
-            if not fname.lower().endswith(ext):
-                fname = Path(fname).stem + ext
-
-            save_path = save_dir / fname
-            try:
-                with open(save_path, 'wb') as f:
-                    f.write(content)
-            except Exception as e:
-                return False, f'Failed to write file from {url}: {e}', None
-
-            # standardized copy
-            std_name = save_dir / ('FCDO' + ext)
-            try:
-                with open(std_name, 'wb') as f:
-                    f.write(content)
-            except Exception:
-                pass
-
-            return True, f'Downloaded FCDO file from {url} and saved as {save_path.name} (std copy {std_name.name})', save_path
-
-    return False, 'Tried candidate URLs but none returned a CSV/ODS export', None
-
-# Determine default fallback files included with the app (if present)
-# Accept 'sdn.csv' (common SDN export filename) first, then fallback to 'OFAC.csv' if present
-FALLBACK_OFAC = Path('sdn.csv') if Path('sdn.csv').exists() else (Path('OFAC.csv') if Path('OFAC.csv').exists() else None)
-FALLBACK_FCDO = Path('FCDO_SL_Mon_Aug 11 2025.ods') if Path('FCDO_SL_Mon_Aug 11 2025.ods').exists() else None
-FALLBACK_EU = Path('20250801-FULL-1_0.csv') if Path('20250801-FULL-1_0.csv').exists() else None
-
-# Data sources UI in a collapsed expander
-with st.expander('Data sources (upload or use local files)', expanded=False):
-    st.write('You can upload the sanction lists here. Uploaded files are saved to the app server and reused across runs until replaced.')
+# Data sources UI (upload only) — remove autodownloads and fallbacks; rely only on user uploads
+with st.expander('Data sources (upload only)', expanded=False):
+    st.write('Upload the sanction lists below. Uploaded files are saved to the app server and reused across runs until replaced.')
     st.markdown('- EU consolidated list: https://data.europa.eu/data/datasets/consolidated-list-of-persons-groups-and-entities-subject-to-eu-financial-sanctions?locale=en')
     st.markdown('- FCDO UK sanctions list search: https://search-uk-sanctions-list.service.gov.uk')
     st.markdown('- OFAC SDN CSV export: https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV')
 
-    # Playwright browser install helper UI
-    try:
-        from playwright.sync_api import sync_playwright  # noqa: F401
-        # check for browser cache dir presence
-        cache_dir = Path.home() / '.cache' / 'ms-playwright'
-        browsers_installed = cache_dir.exists() and any(cache_dir.iterdir())
-    except Exception:
-        browsers_installed = False
-
-    if not browsers_installed:
-        st.warning('Playwright browsers not found. To auto-download FCDO with Playwright you must install the browsers.')
-        if st.button('Install Playwright browsers (may require sudo/network)', key='install_playwright'):
-            with st.spinner('Running playwright install (this can take a minute)...'):
-                ok, out = install_playwright_browsers()
-                if ok:
-                    st.success('Playwright browsers installed successfully')
-                    st.code(out)
-                else:
-                    st.error('Playwright browser install failed')
-                    st.code(out)
-
     uploaded_ofac = st.file_uploader('Upload OFAC CSV', type=['csv'], key='upload_ofac')
-    uploaded_fcdo = st.file_uploader('Upload FCDO .ods', type=['ods', 'csv'], key='upload_fcdo')
+    uploaded_fcdo = st.file_uploader('Upload FCDO (.ods or .csv)', type=['ods', 'csv'], key='upload_fcdo')
     uploaded_eu = st.file_uploader('Upload EU CSV', type=['csv', 'txt'], key='upload_eu')
 
     # Save uploads to data folder if provided
@@ -344,7 +57,11 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
         save_uploaded_file(uploaded_ofac, target)
         st.success(f'OFAC saved to {target}')
     if uploaded_fcdo is not None:
-        target = DATA_DIR / 'FCDO.ods'
+        # preserve extension if user uploaded csv
+        ext = Path(uploaded_fcdo.name).suffix.lower() if uploaded_fcdo.name else '.ods'
+        if ext not in ('.ods', '.csv'):
+            ext = '.ods'
+        target = DATA_DIR / ('FCDO' + ext)
         save_uploaded_file(uploaded_fcdo, target)
         st.success(f'FCDO saved to {target}')
     if uploaded_eu is not None:
@@ -352,42 +69,17 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
         save_uploaded_file(uploaded_eu, target)
         st.success(f'EU list saved to {target}')
 
-    # Auto-download direct attempt button
-    if st.button('Try auto-download FCDO (direct endpoints)', key='auto_fcdo_direct'):
-        try:
-            success, msg, saved = try_direct_fcdo_export(DATA_DIR)
-            if success:
-                st.success(msg)
-            else:
-                st.warning(msg)
-        except Exception as e:
-            st.error(f'Auto-download failed: {e}')
-
-    # Auto-download via Playwright (requires playwright installed)
-    if st.button('Auto-download FCDO (Playwright)', key='auto_fcdo_playwright'):
-        with st.spinner('Running headless browser to download FCDO export...'):
-            success, msg, saved = auto_download_fcdo_playwright(DATA_DIR)
-            if success:
-                st.success(msg)
-            else:
-                st.error(msg)
-
-    # Probe and fetch FCDO button
-    if st.button('Probe and fetch FCDO (from page)', key='probe_fcdo'):
-        with st.spinner('Probing UK sanctions page for export links...'):
-            success, msg, saved = probe_and_fetch_fcdo(DATA_DIR)
-            if success:
-                st.success(msg)
-            else:
-                st.error(msg)
-
-    # Show currently available files (data dir or fallbacks)
-    ofac_path = DATA_DIR / 'OFAC.csv' if (DATA_DIR / 'OFAC.csv').exists() else (FALLBACK_OFAC if FALLBACK_OFAC is not None else None)
-    fcdo_path = DATA_DIR / 'FCDO.ods' if (DATA_DIR / 'FCDO.ods').exists() else (DATA_DIR / 'FCDO.csv' if (DATA_DIR / 'FCDO.csv').exists() else (FALLBACK_FCDO if FALLBACK_FCDO is not None else None))
-    eu_path = DATA_DIR / 'EU.csv' if (DATA_DIR / 'EU.csv').exists() else (FALLBACK_EU if FALLBACK_EU is not None else None)
-
-    st.write('Current files:')
+    # Show currently uploaded files from data/ only
+    st.write('Currently uploaded files:')
     cols = st.columns(3)
+    ofac_path = DATA_DIR / 'OFAC.csv' if (DATA_DIR / 'OFAC.csv').exists() else None
+    fcdo_path = None
+    if (DATA_DIR / 'FCDO.ods').exists():
+        fcdo_path = DATA_DIR / 'FCDO.ods'
+    elif (DATA_DIR / 'FCDO.csv').exists():
+        fcdo_path = DATA_DIR / 'FCDO.csv'
+    eu_path = DATA_DIR / 'EU.csv' if (DATA_DIR / 'EU.csv').exists() else None
+
     with cols[0]:
         st.write('OFAC:')
         if ofac_path:
@@ -395,15 +87,17 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
             with open(ofac_path, 'rb') as f:
                 st.download_button('Download OFAC file', f.read(), file_name=ofac_path.name, mime='text/csv')
         else:
-            st.info('No OFAC file available')
+            st.info('No OFAC file uploaded')
     with cols[1]:
         st.write('FCDO:')
         if fcdo_path:
             st.write(fcdo_path.name)
             with open(fcdo_path, 'rb') as f:
-                st.download_button('Download FCDO file', f.read(), file_name=fcdo_path.name, mime='application/vnd.oasis.opendocument.spreadsheet')
+                # choose a generic mime for ods or csv
+                mime = 'application/vnd.oasis.opendocument.spreadsheet' if fcdo_path.suffix.lower() == '.ods' else 'text/csv'
+                st.download_button('Download FCDO file', f.read(), file_name=fcdo_path.name, mime=mime)
         else:
-            st.info('No FCDO file available')
+            st.info('No FCDO file uploaded')
     with cols[2]:
         st.write('EU:')
         if eu_path:
@@ -411,9 +105,9 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
             with open(eu_path, 'rb') as f:
                 st.download_button('Download EU file', f.read(), file_name=eu_path.name, mime='text/csv')
         else:
-            st.info('No EU file available')
+            st.info('No EU file uploaded')
 
-# Load name lists using saved files (or fallbacks)
+# Load name lists using only uploaded files in data/ (no fallbacks)
 ofac_names = []
 fcdo_names = []
 eu_names = []
