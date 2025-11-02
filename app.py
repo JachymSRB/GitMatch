@@ -24,8 +24,39 @@ def save_uploaded_file(uploaded, target_path: Path):
 # Cached loaders that read from a file path. Cache keyed by path so updates reload.
 @st.cache_data
 def load_ofac_from(path: str):
-    df = pd.read_csv(path, header=None)
-    names = df.iloc[:, 3].astype(str).tolist()
+    # Try reading with a normal header first; fall back to headerless parsing if needed
+    try:
+        df = pd.read_csv(path, dtype=str)
+    except Exception:
+        # be permissive with encoding/engine if file is messy
+        df = pd.read_csv(path, header=None, dtype=str, encoding='utf-8', engine='python')
+
+    # Try to find the most likely name column by inspecting column names
+    name_col = None
+    try:
+        cols = list(df.columns)
+        cols_low = [str(c).lower() for c in cols]
+        # prefer columns that explicitly contain 'name' or 'entity'
+        for i, c in enumerate(cols_low):
+            if 'name' in c or 'entity' in c or 'sdn' in c:
+                name_col = cols[i]
+                break
+        # if not found and the file had no header (numeric column names), assume second column is the name
+        if name_col is None:
+            if all(isinstance(c, int) or str(c).isdigit() for c in cols):
+                # headerless CSV - common SDN layout: id, name, ...
+                if df.shape[1] > 1:
+                    name_col = df.columns[1]
+                else:
+                    name_col = df.columns[0]
+        # final fallback: prefer column index 1 if present, else 0
+        if name_col is None:
+            name_col = df.columns[1] if df.shape[1] > 1 else df.columns[0]
+    except Exception:
+        # extremely permissive fallback
+        name_col = df.columns[1] if df.shape[1] > 1 else df.columns[0]
+
+    names = df[name_col].dropna().astype(str).tolist()
     return names
 
 @st.cache_data
@@ -69,20 +100,49 @@ with st.expander('Data sources (upload only)', expanded=False):
     # Show currently uploaded files from data/ only
     st.write('Currently uploaded files:')
     cols = st.columns(3)
-    ofac_path = DATA_DIR / 'OFAC.csv' if (DATA_DIR / 'OFAC.csv').exists() else None
+    repo_root = Path(__file__).parent
+    # prefer files in data/ if present; fall back to repo root filenames the user supplied
+    ofac_path = None
+    if (DATA_DIR / 'OFAC.csv').exists():
+        ofac_path = DATA_DIR / 'OFAC.csv'
+    elif (DATA_DIR / 'sdn.csv').exists():
+        ofac_path = DATA_DIR / 'sdn.csv'
+    else:
+        # repo-root fallbacks
+        if (repo_root / 'sdn.csv').exists():
+            ofac_path = repo_root / 'sdn.csv'
+        elif (repo_root / 'OFAC.csv').exists():
+            ofac_path = repo_root / 'OFAC.csv'
+
     fcdo_path = None
     if (DATA_DIR / 'FCDO.ods').exists():
         fcdo_path = DATA_DIR / 'FCDO.ods'
     elif (DATA_DIR / 'FCDO.csv').exists():
         fcdo_path = DATA_DIR / 'FCDO.csv'
-    eu_path = DATA_DIR / 'EU.csv' if (DATA_DIR / 'EU.csv').exists() else None
+    else:
+        # repo-root fallback: common filename the user provided
+        if (repo_root / 'FCDO_SL_Sun_Nov 02 2025.ods').exists():
+            fcdo_path = repo_root / 'FCDO_SL_Sun_Nov 02 2025.ods'
+        elif (repo_root / 'FCDO_SL_Sun_Nov 02 2025.csv').exists():
+            fcdo_path = repo_root / 'FCDO_SL_Sun_Nov 02 2025.csv'
+
+    eu_path = None
+    if (DATA_DIR / 'EU.csv').exists():
+        eu_path = DATA_DIR / 'EU.csv'
+    else:
+        # repo-root fallback: the EU file the user mentioned
+        if (repo_root / '20251028-FULL-1_1.csv').exists():
+            eu_path = repo_root / '20251028-FULL-1_1.csv'
 
     with cols[0]:
         st.write('OFAC:')
         if ofac_path:
             st.write(ofac_path.name)
-            with open(ofac_path, 'rb') as f:
-                st.download_button('Download OFAC file', f.read(), file_name=ofac_path.name, mime='text/csv')
+            try:
+                with open(ofac_path, 'rb') as f:
+                    st.download_button('Download OFAC file', f.read(), file_name=ofac_path.name, mime='text/csv')
+            except Exception:
+                st.info('OFAC file present but could not be opened for download')
         else:
             st.info('No OFAC file uploaded')
     with cols[1]:
@@ -96,8 +156,11 @@ with st.expander('Data sources (upload only)', expanded=False):
         st.write('EU:')
         if eu_path:
             st.write(eu_path.name)
-            with open(eu_path, 'rb') as f:
-                st.download_button('Download EU file', f.read(), file_name=eu_path.name, mime='text/csv')
+            try:
+                with open(eu_path, 'rb') as f:
+                    st.download_button('Download EU file', f.read(), file_name=eu_path.name, mime='text/csv')
+            except Exception:
+                st.info('EU file present but could not be opened for download')
         else:
             st.info('No EU file uploaded')
 
@@ -110,7 +173,34 @@ if ofac_path:
 if fcdo_path:
     fcdo_names = load_fcdo_from(str(fcdo_path))
 if eu_path:
-    eu_names = load_eu_from(str(eu_path))
+    # The EU file format can vary. Try the preferred loader first, but if it raises
+    # a KeyError (missing expected column), read the file with pandas and prompt
+    # the user to pick the correct column containing names.
+    try:
+        eu_names = load_eu_from(str(eu_path))
+    except KeyError:
+        try:
+            # Try to read CSV with automatic parsing
+            df_eu = pd.read_csv(str(eu_path))
+        except Exception:
+            try:
+                df_eu = pd.read_csv(str(eu_path), header=None)
+            except Exception as e:
+                st.error(f'Failed to read EU file: {e}')
+                df_eu = None
+        if df_eu is not None:
+            cols = list(df_eu.columns)
+            # Ask the user to select which column contains the full name values
+            st.error("EU file didn't contain the expected column. Please choose the column that contains the names.")
+            selected = st.selectbox('EU: select name column', options=cols, key='eu_name_column')
+            try:
+                eu_names = df_eu[selected].dropna().astype(str).tolist()
+            except Exception as e:
+                st.error(f'Failed to extract names from selected column: {e}')
+                eu_names = []
+    except Exception as e:
+        st.error(f'Failed to load EU list: {e}')
+        eu_names = []
 
 # Normalization utilities
 def normalize(text: str) -> str:
