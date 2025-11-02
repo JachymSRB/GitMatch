@@ -81,20 +81,31 @@ with st.expander('Data sources (upload only)', expanded=False):
 
     # Save uploads to data folder if provided
     if uploaded_ofac is not None:
-        target = DATA_DIR / 'OFAC.csv'
+        # preserve the user's original filename for clarity
+        safe_name = Path(uploaded_ofac.name).name if uploaded_ofac.name else 'sdn.csv'
+        if not safe_name.lower().endswith('.csv'):
+            safe_name = safe_name + '.csv'
+        target = DATA_DIR / safe_name
         save_uploaded_file(uploaded_ofac, target)
+        st.session_state['saved_ofac'] = target.name
         st.success(f'OFAC saved to {target}')
     if uploaded_fcdo is not None:
-        # preserve extension if user uploaded csv
-        ext = Path(uploaded_fcdo.name).suffix.lower() if uploaded_fcdo.name else '.ods'
+        # preserve original filename but ensure a valid extension
+        orig_name = Path(uploaded_fcdo.name).name if uploaded_fcdo.name else 'FCDO.ods'
+        ext = Path(orig_name).suffix.lower()
         if ext not in ('.ods', '.csv'):
-            ext = '.ods'
-        target = DATA_DIR / ('FCDO' + ext)
+            orig_name = orig_name + '.ods'
+        target = DATA_DIR / orig_name
         save_uploaded_file(uploaded_fcdo, target)
+        st.session_state['saved_fcdo'] = target.name
         st.success(f'FCDO saved to {target}')
     if uploaded_eu is not None:
-        target = DATA_DIR / 'EU.csv'
+        safe_name = Path(uploaded_eu.name).name if uploaded_eu.name else 'EU.csv'
+        if not (safe_name.lower().endswith('.csv') or safe_name.lower().endswith('.txt')):
+            safe_name = safe_name + '.csv'
+        target = DATA_DIR / safe_name
         save_uploaded_file(uploaded_eu, target)
+        st.session_state['saved_eu'] = target.name
         st.success(f'EU list saved to {target}')
 
     # Show currently uploaded files from data/ only
@@ -103,7 +114,10 @@ with st.expander('Data sources (upload only)', expanded=False):
     repo_root = Path(__file__).parent
     # prefer files in data/ if present; fall back to repo root filenames the user supplied
     ofac_path = None
-    if (DATA_DIR / 'OFAC.csv').exists():
+    # prefer the file the user uploaded in this app (preserve filename)
+    if st.session_state.get('saved_ofac') and (DATA_DIR / st.session_state.get('saved_ofac')).exists():
+        ofac_path = DATA_DIR / st.session_state.get('saved_ofac')
+    elif (DATA_DIR / 'OFAC.csv').exists():
         ofac_path = DATA_DIR / 'OFAC.csv'
     elif (DATA_DIR / 'sdn.csv').exists():
         ofac_path = DATA_DIR / 'sdn.csv'
@@ -115,7 +129,9 @@ with st.expander('Data sources (upload only)', expanded=False):
             ofac_path = repo_root / 'OFAC.csv'
 
     fcdo_path = None
-    if (DATA_DIR / 'FCDO.ods').exists():
+    if st.session_state.get('saved_fcdo') and (DATA_DIR / st.session_state.get('saved_fcdo')).exists():
+        fcdo_path = DATA_DIR / st.session_state.get('saved_fcdo')
+    elif (DATA_DIR / 'FCDO.ods').exists():
         fcdo_path = DATA_DIR / 'FCDO.ods'
     elif (DATA_DIR / 'FCDO.csv').exists():
         fcdo_path = DATA_DIR / 'FCDO.csv'
@@ -127,7 +143,9 @@ with st.expander('Data sources (upload only)', expanded=False):
             fcdo_path = repo_root / 'FCDO_SL_Sun_Nov 02 2025.csv'
 
     eu_path = None
-    if (DATA_DIR / 'EU.csv').exists():
+    if st.session_state.get('saved_eu') and (DATA_DIR / st.session_state.get('saved_eu')).exists():
+        eu_path = DATA_DIR / st.session_state.get('saved_eu')
+    elif (DATA_DIR / 'EU.csv').exists():
         eu_path = DATA_DIR / 'EU.csv'
     else:
         # repo-root fallback: the EU file the user mentioned
@@ -149,7 +167,13 @@ with st.expander('Data sources (upload only)', expanded=False):
         st.write('FCDO:')
         if fcdo_path:
             st.write(fcdo_path.name)
-            # FCDO download button removed: users must upload the file and it will be used by the app
+            try:
+                with open(fcdo_path, 'rb') as f:
+                    data = f.read()
+                mime = 'application/vnd.oasis.opendocument.spreadsheet' if fcdo_path.suffix.lower() == '.ods' else 'text/csv'
+                st.download_button('Download FCDO file', data, file_name=fcdo_path.name, mime=mime)
+            except Exception:
+                st.info('FCDO file present but could not be opened for download')
         else:
             st.info('No FCDO file uploaded')
     with cols[2]:
