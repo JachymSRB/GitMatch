@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import unicodedata
 from rapidfuzz import process, fuzz
 from fcdo_loader import load_fcdo_names
 from eu_loader import load_eu_names
@@ -14,22 +15,44 @@ def load_ofac():
     return names
 
 
-
 ofac_names = load_ofac()
 fcdo_names = load_fcdo_names('FCDO_SL_Mon_Aug 11 2025.ods')
 eu_names = load_eu_names('20250801-FULL-1_0.csv')
 
-def normalize(text):
-    # Remove special characters, lowercase, and tokenize
-    text = re.sub(r'[^\w\s]', '', text)
-    tokens = text.lower().split()
-    return ' '.join(tokens)
+# Normalization utilities
+def normalize(text: str) -> str:
+    if not text:
+        return ''
+    text = str(text)
+    # Unicode normalize, remove diacritics
+    text = unicodedata.normalize('NFKD', text)
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    # Lowercase and remove non-alphanumeric (keep spaces)
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
+def ngrams(s: str, n: int = 3) -> set:
+    # simple character n-grams with boundary markers
+    if not s:
+        return set()
+    s2 = '_' + re.sub(r'\s+', ' ', s) + '_'
+    return {s2[i:i+n] for i in range(len(s2) - n + 1)}
+
+
+def jaccard_grams(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# preserve existing enhancement logic (remove vich/vna tokens etc.)
 def enhance_names(names):
     enhanced = set(names)
     for name in names:
-        tokens = name.split()
+        tokens = str(name).split()
         filtered = [t for t in tokens if not ("vich" in t or "vna" in t)]
         if len(filtered) < len(tokens):
             new_name = " ".join(filtered)
@@ -37,31 +60,90 @@ def enhance_names(names):
                 enhanced.add(new_name)
     return list(enhanced)
 
+
 @st.cache_resource
-def get_enhanced_lists():
+def get_enhanced_lists(ngram_n: int = 3):
+    """Return enhanced name lists and precomputed normalized forms and n-grams.
+    Each list element is a dict: {'orig': original_name, 'norm': normalized, 'grams': set, 'len': int}
+    """
     ofac = enhance_names(ofac_names)
     fcdo = enhance_names(fcdo_names)
     eu = enhance_names(eu_names)
-    return ofac, fcdo, eu
+
+    def enrich_list(lst, n):
+        out = []
+        for name in lst:
+            norm = normalize(name)
+            out.append({'orig': name, 'norm': norm, 'grams': ngrams(norm, n), 'len': len(norm)})
+        return out
+
+    return enrich_list(ofac, ngram_n), enrich_list(fcdo, ngram_n), enrich_list(eu, ngram_n)
 
 
-def get_top_matches(query, choices, n=3):
+def candidate_filter(query_norm: str, qgrams: set, qlen: int, choices_struct: list,
+                     jaccard_thresh: float = 0.18, length_frac: float = 0.5,
+                     require_first_letter: bool = False) -> list:
+    """Return subset of choices_struct that pass cheap filters."""
+    candidates = []
+    q_first = query_norm[0] if query_norm else ''
+    for item in choices_struct:
+        # length fractional difference filter
+        if qlen == 0 and item['len'] == 0:
+            pass
+        else:
+            if max(qlen, 1) > 0 and abs(qlen - item['len']) / max(qlen, 1) > length_frac:
+                continue
+        # optional first-letter block
+        if require_first_letter and q_first and item['norm'] and item['norm'][0] != q_first:
+            continue
+        # jaccard n-gram filter
+        if jaccard_grams(qgrams, item['grams']) < jaccard_thresh:
+            continue
+        candidates.append(item)
+    return candidates
+
+
+def get_top_matches(query, choices_struct, n=3, jaccard_thresh=0.18, length_frac=0.5, score_cutoff=60, require_first_letter=False):
     # Enhance input name if it contains 'vich' or 'vna'
-    tokens = query.split()
+    tokens = str(query).split()
     filtered = [t for t in tokens if not ("vich" in t or "vna" in t)]
-    queries = [query]
+    queries = [str(query)]
     if len(filtered) < len(tokens):
         new_query = " ".join(filtered)
         if new_query:
             queries.append(new_query)
-    # Get matches for both original and enhanced query
+
     all_matches = []
     for q in queries:
         query_norm = normalize(q)
-        choices_norm = [normalize(c) for c in choices]
-        results = process.extract(query_norm, choices_norm, scorer=fuzz.token_sort_ratio, limit=n)
-        # Map back to original names and show rounded score
-        all_matches.extend([(choices[i], int(round(score))) for (_, score, i) in results])
+        qlen = len(query_norm)
+        # qgrams should be computed with the same n that was used for precomputing choices
+        # default n value in ngrams() is 3; choices_struct will have grams computed accordingly
+        # infer n from one candidate if present
+        if choices_struct and 'grams' in choices_struct[0] and choices_struct[0]['grams']:
+            # try to infer n from one gram length (not exact but works for common n)
+            sample = next(iter(choices_struct[0]['grams']))
+            qgrams = ngrams(query_norm, len(sample))
+        else:
+            qgrams = ngrams(query_norm)
+
+        # cheap pre-filter to reduce candidates
+        candidates = candidate_filter(query_norm, qgrams, qlen, choices_struct,
+                                      jaccard_thresh=jaccard_thresh, length_frac=length_frac,
+                                      require_first_letter=require_first_letter)
+        if not candidates:
+            continue
+        # prepare lists for rapidfuzz (norms) and keep mapping to original
+        choices_norm = [c['norm'] for c in candidates]
+        orig_names = [c['orig'] for c in candidates]
+        # Use RapidFuzz to get top matches among filtered candidates
+        # Set processor=None because we already normalized the strings; use score_cutoff for early exit
+        results = process.extract(query_norm, choices_norm, scorer=fuzz.token_sort_ratio,
+                                  processor=None, score_cutoff=score_cutoff, limit=n)
+        # Map back to original names and collect
+        for (choice_norm, score, idx) in results:
+            all_matches.append((orig_names[idx], int(round(score))))
+
     # Deduplicate by name, keep highest score, and sort
     match_dict = {}
     for name, score in all_matches:
@@ -71,7 +153,6 @@ def get_top_matches(query, choices, n=3):
     return sorted_matches[:n]
 
 
-
 st.set_page_config(layout="wide")
 
 # Title and sensitivity slider across the top
@@ -79,9 +160,40 @@ st.title('Pazdrát Fuzzy Matcher')
 st.write('Paste a column of names from Excel below:')
 threshold = st.slider('Minimum match score threshold', min_value=0, max_value=100, value=70, key='threshold_slider')
 
+# Advanced controls in a collapsed expander
+with st.expander('Advanced', expanded=False):
+    jaccard_thresh = st.slider('Jaccard n-gram threshold', min_value=0.0, max_value=1.0, value=0.18, step=0.01, key='jaccard_thresh')
+    length_frac = st.slider('Max relative length difference', min_value=0.0, max_value=1.0, value=0.5, step=0.01, key='length_frac')
+    score_cutoff = st.slider('RapidFuzz score cutoff (early exit)', min_value=0, max_value=100, value=threshold, key='score_cutoff')
+    ngram_n = st.slider('N-gram size (for blocking)', min_value=2, max_value=5, value=3, step=1, key='ngram_n')
+    require_first_letter = st.checkbox('Require same first letter', value=False, key='require_first_letter')
+    top_n = st.number_input('Results per list', min_value=1, max_value=10, value=3, step=1, key='top_n')
 
-# Layout: input 1 wide, output 3 wide
-
+# If the user didn't open Advanced, provide defaults for those vars
+try:
+    jaccard_thresh
+except NameError:
+    jaccard_thresh = 0.18
+try:
+    length_frac
+except NameError:
+    length_frac = 0.5
+try:
+    score_cutoff
+except NameError:
+    score_cutoff = threshold
+try:
+    ngram_n
+except NameError:
+    ngram_n = 3
+try:
+    require_first_letter
+except NameError:
+    require_first_letter = False
+try:
+    top_n
+except NameError:
+    top_n = 3
 
 # Editable input table in expander
 with st.expander('Input Table', expanded=False):
@@ -89,13 +201,14 @@ with st.expander('Input Table', expanded=False):
 
 # Results table below title and above input
 if not input_df.empty and input_df['Names'].str.strip().any():
-    ofac_enh, fcdo_enh, eu_enh = get_enhanced_lists()
+    # get precomputed enhanced lists for the selected n-gram size
+    ofac_enh, fcdo_enh, eu_enh = get_enhanced_lists(ngram_n)
     ofac_result = []
     fcdo_result = []
     eu_result = []
     for name in input_df['Names'].dropna():
         # OFAC matches
-        ofac_matches = get_top_matches(name, ofac_enh)
+        ofac_matches = get_top_matches(name, ofac_enh, n=top_n, jaccard_thresh=jaccard_thresh, length_frac=length_frac, score_cutoff=score_cutoff, require_first_letter=require_first_letter)
         ofac_filtered = [m for m in ofac_matches if m[1] >= threshold]
         if ofac_filtered:
             ofac_str = ', '.join([f"{m[0]} ({m[1]})" for m in ofac_filtered])
@@ -103,7 +216,7 @@ if not input_df.empty and input_df['Names'].str.strip().any():
             ofac_str = ''
         ofac_result.append(ofac_str)
         # FCDO matches
-        fcdo_matches = get_top_matches(name, fcdo_enh)
+        fcdo_matches = get_top_matches(name, fcdo_enh, n=top_n, jaccard_thresh=jaccard_thresh, length_frac=length_frac, score_cutoff=score_cutoff, require_first_letter=require_first_letter)
         fcdo_filtered = [m for m in fcdo_matches if m[1] >= threshold]
         if fcdo_filtered:
             fcdo_str = ', '.join([f"{m[0]} ({m[1]})" for m in fcdo_filtered])
@@ -111,7 +224,7 @@ if not input_df.empty and input_df['Names'].str.strip().any():
             fcdo_str = ''
         fcdo_result.append(fcdo_str)
         # EU matches
-        eu_matches = get_top_matches(name, eu_enh)
+        eu_matches = get_top_matches(name, eu_enh, n=top_n, jaccard_thresh=jaccard_thresh, length_frac=length_frac, score_cutoff=score_cutoff, require_first_letter=require_first_letter)
         eu_filtered = [m for m in eu_matches if m[1] >= threshold]
         if eu_filtered:
             eu_str = ', '.join([f"{m[0]} ({m[1]})" for m in eu_filtered])
