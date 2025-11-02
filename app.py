@@ -8,9 +8,6 @@ from eu_loader import load_eu_names
 import os
 from pathlib import Path
 import requests
-import subprocess
-import shutil
-from bs4 import BeautifulSoup
 
 DATA_DIR = Path('data')
 DATA_DIR.mkdir(exist_ok=True)
@@ -92,10 +89,7 @@ with st.expander('Data sources (upload only)', expanded=False):
         st.write('FCDO:')
         if fcdo_path:
             st.write(fcdo_path.name)
-            with open(fcdo_path, 'rb') as f:
-                # choose a generic mime for ods or csv
-                mime = 'application/vnd.oasis.opendocument.spreadsheet' if fcdo_path.suffix.lower() == '.ods' else 'text/csv'
-                st.download_button('Download FCDO file', f.read(), file_name=fcdo_path.name, mime=mime)
+            # FCDO download button removed: users must upload the file and it will be used by the app
         else:
             st.info('No FCDO file uploaded')
     with cols[2]:
@@ -330,21 +324,3 @@ if not input_df.empty and input_df['Names'].str.strip().any():
     st.download_button(label='Download results as CSV', data=csv, file_name='matches.csv', mime='text/csv')
 else:
     st.info('Enter names to see matches.')
-
-# NOTE: The previous auto-download helper functions (direct endpoint probes and Playwright-based
-# download) were removed because they were unreliable on Streamlit Community Cloud and
-# introduced maintenance/installation complexity. We use the BeautifulSoup-based
-# probe_and_fetch_fcdo(...) function elsewhere to attempt lightweight scraping instead.
-
-def install_playwright_browsers() -> tuple:
-    """Run the Playwright CLI to install browsers. Returns (success: bool, output: str)."""
-    try:
-        cli = shutil.which('playwright') or 'playwright'
-        proc = subprocess.run([cli, 'install', '--with-deps'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900)
-        return (proc.returncode == 0, proc.stdout)
-    except FileNotFoundError:
-        return False, 'playwright CLI not found. Install Playwright in this environment (pip install playwright)'
-    except subprocess.TimeoutExpired:
-        return False, 'playwright install timed out'
-    except Exception as e:
-        return False, f'playwright install failed: {e}'
