@@ -2,3 +2,4 @@ streamlit
 pandas
 rapidfuzz
 pyexcel-ods3
+playwright

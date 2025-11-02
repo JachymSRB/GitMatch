@@ -125,6 +125,67 @@ def try_direct_fcdo_export(save_dir: Path) -> tuple:
             return True, msg, save_path
     return False, 'No direct export endpoint found among candidates', None
 
+def auto_download_fcdo_playwright(save_dir: Path) -> tuple:
+    """Use Playwright to open the UK sanctions site, click the "Download results" button and save the file.
+    Returns (success: bool, message: str, saved_path: Path|None).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return False, ("Playwright is not installed. To enable automatic FCDO downloads install it:\n"
+                       "pip install playwright && playwright install"), None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto('https://search-uk-sanctions-list.service.gov.uk', timeout=60000)
+            # Wait for the download control to appear
+            try:
+                page.wait_for_selector('text="Download results"', timeout=15000)
+            except Exception:
+                # Try alternate selector
+                try:
+                    page.wait_for_selector('a:has-text("Download results")', timeout=15000)
+                except Exception as e:
+                    browser.close()
+                    return False, f'Could not find the "Download results" control on the page: {e}', None
+
+            # Trigger the download and capture it
+            try:
+                with page.expect_download(timeout=60000) as download_info:
+                    # Click the link/button that starts the export
+                    page.click('text="Download results"')
+                download = download_info.value
+            except Exception as e:
+                browser.close()
+                return False, f'Download was not triggered or timed out: {e}', None
+
+            suggested = download.suggested_filename or 'fcdo_export'
+            save_path = save_dir / suggested
+            try:
+                download.save_as(str(save_path))
+            except Exception as e:
+                browser.close()
+                return False, f'Failed to save download: {e}', None
+
+            # Standardize copy name so rest of app can find it
+            ext = Path(suggested).suffix.lower()
+            if not ext:
+                ext = '.csv'
+                save_path = save_dir / (suggested + ext)
+            std_name = save_dir / ('FCDO' + ext)
+            try:
+                import shutil
+                shutil.copyfile(save_path, std_name)
+            except Exception:
+                pass
+
+            browser.close()
+            return True, f'Downloaded FCDO file via Playwright and saved as {save_path.name}', save_path
+    except Exception as e:
+        return False, f'Playwright run failed: {e}', None
+
 # Determine default fallback files included with the app (if present)
 # Accept 'sdn.csv' (common SDN export filename) first, then fallback to 'OFAC.csv' if present
 FALLBACK_OFAC = Path('sdn.csv') if Path('sdn.csv').exists() else (Path('OFAC.csv') if Path('OFAC.csv').exists() else None)
@@ -166,6 +227,15 @@ with st.expander('Data sources (upload or use local files)', expanded=False):
                 st.warning(msg)
         except Exception as e:
             st.error(f'Auto-download failed: {e}')
+
+    # Auto-download via Playwright (requires playwright installed)
+    if st.button('Auto-download FCDO (Playwright)', key='auto_fcdo_playwright'):
+        with st.spinner('Running headless browser to download FCDO export...'):
+            success, msg, saved = auto_download_fcdo_playwright(DATA_DIR)
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
 
     # Show currently available files (data dir or fallbacks)
     ofac_path = DATA_DIR / 'OFAC.csv' if (DATA_DIR / 'OFAC.csv').exists() else (FALLBACK_OFAC if FALLBACK_OFAC is not None else None)
